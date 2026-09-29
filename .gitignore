@@ -1,0 +1,19 @@
+# Build output
+build/
+cmake-build-*/
+*.o
+*.d
+*.a
+
+# macOS
+.DS_Store
+
+# Xcode / IDEs
+xcuserdata/
+*.xcworkspace/
+DerivedData/
+.vscode/
+.idea/
+
+# Leftovers from an interrupted test run
+logflow_test_*.tmp
