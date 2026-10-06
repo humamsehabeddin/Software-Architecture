@@ -31,6 +31,16 @@ public:
     std::vector<T> items;
 };
 
+/// The "collecting emitter" test double: plug it in where a stage would emit,
+/// then inspect `items`. It lets a stage be tested with no Source, no Sink,
+/// no Pipeline and no file: build the stage, call process(), look at `items`.
+template <typename T>
+class CollectingEmitter final : public logflow::Emitter<T> {
+public:
+    void emit(T item) override { items.push_back(std::move(item)); }
+    std::vector<T> items;
+};
+
 /// Logs "consume:<item>" into a shared event list.
 class LoggingSink final : public logflow::Sink<std::string> {
 public:

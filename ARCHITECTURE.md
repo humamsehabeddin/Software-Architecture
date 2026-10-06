@@ -1,4 +1,8 @@
-# LogFlow — Architecture (Increment 1: The Skeleton Pipeline)
+# LogFlow — Architecture
+
+*Sections 1-8 describe Increment 1 (the skeleton). Increment 2 is documented in section 9 at the end; where the two disagree (record type, `ConsoleSink`), section 9 wins.*
+
+## Increment 1: The Skeleton Pipeline
 
 ## 1. The two-box diagram
 
@@ -123,3 +127,102 @@ framework). They cover both concrete components, every pipeline behaviour
 described above, and an end-to-end check that the sample log comes out
 byte-for-byte identical. `make check` does the same through the real
 executable using `diff`.
+
+---
+
+## 9. Increment 2: typed records and the first real stage
+
+```
+ FileLineSource ──string──> ParserStage ──LogRecord──> ConsoleSink
+ (Source<string>)       (Stage<string,LogRecord>)      (Sink<LogRecord>)
+```
+
+Three boxes now, two connectors. The pipeline no longer carries strings from
+end to end: it carries a **domain model**.
+
+### Separation of concerns
+
+| Concern | Owner |
+|---|---|
+| Getting lines (files, I/O errors, line endings) | `FileLineSource` |
+| Knowing what a log line *means* | `ParserStage` |
+| What a record *is* | `LogRecord` |
+| How a record *looks on screen* | `ConsoleSink` |
+| Wiring and ordering | `Pipeline` / `Main` |
+
+The parser has no idea where lines come from (the tests feed it plain strings)
+and no idea what happens to records afterwards. The sink has no idea records
+were ever text.
+
+### `LogRecord`: immutable and extensible
+
+- **Immutable:** all members are `const`, set in the constructor. A stage that
+  wants a different record builds a new one, so no downstream stage can be
+  surprised by an upstream edit. (Side effect: records are copy-constructible
+  but not assignable, which is fine for a record that only flows forward.)
+- **`attributes` (`std::map<string,string>`) is the extension point.** The
+  parser fills in what it knows. Later increments (5-7) will add facts it cannot
+  know (a geo-IP country, a session id, a tag set by a rule) by emitting a new
+  record with extra attributes, with **no change** to `LogRecord`, `ParserStage`,
+  `Pipeline` or any existing stage. A closed record type would instead force an
+  edit to every class that touches it each time a new fact appears. The parser
+  leaves it empty for now.
+- **`raw`** keeps the original line, so nothing the parser ignores (for example
+  the referer) is lost.
+- **`path`** is the request target exactly as logged, query string included.
+  Splitting or normalising it is a later stage's job; the parser stays faithful
+  to the input.
+- **`timestamp`** is a `std::chrono::system_clock::time_point` in UTC; the log's
+  time-zone offset is applied while parsing. Date arithmetic lives in
+  `TimeUtil.hpp` (no `std::get_time`/`timegm`, which differ between macOS and
+  Linux).
+
+### `ParserStage`
+
+- Accepts Common Log Format and the "combined" extension (referer + user agent)
+  that the sample log uses. Plain CLF is accepted too (`userAgent` is `""`).
+- Hand-written field scanner instead of `std::regex`: handles quoted fields with
+  spaces and `\"` escapes, tolerates runs of spaces between fields, and is
+  faster and easier to debug than a regex.
+- **Malformed lines are only skipped and counted** (blank line, missing field,
+  bad timestamp, bad status code, unterminated quote, trailing junk). They emit
+  nothing; `malformedCount()` reports them and `Main` prints the total at the
+  end. *Handling them properly (reporting which line and why, a dead-letter
+  output, a policy) is Increment 5.* The architecture is being built layer by
+  layer on purpose: this week's stage does the minimum so that week 5 has
+  something concrete to improve.
+
+### Adding the stage touched almost nothing
+
+`Pipeline.hpp`, `Pipeline.cpp`, `Source.hpp`, `Stage.hpp`, `Emitter.hpp`,
+`Sink.hpp`, `StageException.hpp` and `FileLineSource` are **unchanged**. The only
+existing production files edited are `Main.cpp` (one `.then(parser)` line plus
+printing the count) and `ConsoleSink` (it now consumes `LogRecord`, which is task 3,
+not a consequence of adding the parser). This is the open/closed principle from
+section 3 paying off: a new stage is a new class plus one line of wiring.
+
+### Testing without the file system
+
+`tests/test_support.hpp` now has `CollectingEmitter<T>`, a **test double**: an
+`Emitter` that just stores whatever it is given. A stage test is therefore:
+
+```
+ParserStage stage;
+CollectingEmitter<LogRecord> out;
+stage.process("<one log line>", out);
+// look at out.items and stage.malformedCount()
+```
+
+This works because `Stage::process` takes its input as an argument and sends its
+output to an interface (`Emitter`) instead of reading a file or writing to the
+console. Nothing in the stage is hard-wired to I/O, so the test needs no
+`Source`, no `Sink`, no `Pipeline` and no disk, which makes it fast, deterministic
+and independent of the other components. It will be reused by every later stage.
+
+### Known limitations
+
+- Malformed lines are counted only (until Increment 5).
+- Only the first 15 digits of the bytes field are accepted; status must be 100-599.
+- The referer is parsed but not stored (it is still in `raw`).
+- IPv6 and hostnames are accepted as opaque text; the IP is not validated.
+- Tests: 40 (the 22 from Increment 1, with the console and end-to-end ones reworked for records, plus 18 new). See the README for coverage.

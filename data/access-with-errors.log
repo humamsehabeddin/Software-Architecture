@@ -1,0 +1,7 @@
+203.0.113.240 - - [21/Sep/2026:09:00:00 +0000] "GET /products/42 HTTP/1.1" 404 8301 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) Safari/605.1.15"
+this line is not a log entry at all
+
+192.0.2.10 - - [21/Sep/2026:09:00:03 +0000] "GET /search?q=log+flow&page=2 HTTP/1.1" 200 1482 "https://example.com/" "curl/8.4"
+192.0.2.10 - - [31/Feb/2026:09:00:04 +0000] "GET /api/orders HTTP/1.1" 200 1482 "-" "curl/8.4"
+192.0.2.11 - - [21/Sep/2026:09:00:05 +0000] "GET /api/orders HTTP/1.1" two-hundred 1482 "-" "curl/8.4"
+192.0.2.12 - - [21/Sep/2026:09:00:06 +0000] "GET /health HTTP/1.1" 200 2 "-" "kube-probe/1.29"

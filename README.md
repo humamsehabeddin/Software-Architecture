@@ -1,7 +1,7 @@
 # LogFlow
 
 A log-processing pipeline, built incrementally as a Software Architecture
-term project. **This is Increment 1: the skeleton pipeline.**
+term project. **This is Increment 2: typed records and the first real stage.**
 
 `logflow data/access-small.log` reads a text file and prints every line to the
 console, through a `Source → (Stages) → Sink` pipeline rather than through a
@@ -21,8 +21,9 @@ run `xcode-select --install`; that also installs `git`.
 ```sh
 make          # builds build/logflow
 make run      # runs it on data/access-small.log
-make test     # unit tests (22)
-make check    # runs the real executable and diffs its output with the input
+make test     # unit tests (40)
+make check    # runs the real executable on the sample log and verifies 200 lines -> 200 records
+make coverage # builds the tests with gcov instrumentation and prints line coverage
 make clean
 ```
 
@@ -49,21 +50,28 @@ Exit codes: `0` success, `1` runtime error (for example a missing file), `2` wro
 ```
 include/logflow/   the contracts and public headers
   Emitter.hpp  Source.hpp  Stage.hpp  Sink.hpp  StageException.hpp
+  LogRecord.hpp                      (the immutable domain record)
   Pipeline.hpp                       (the connector; depends only on the above)
-  FileLineSource.hpp  ConsoleSink.hpp  (the two implementations)
-src/               FileLineSource.cpp  ConsoleSink.cpp  Pipeline.cpp  Main.cpp
-tests/             unit tests + tiny test harness
-data/              access-small.log   (200 lines, common access-log format)
+  FileLineSource.hpp  ParserStage.hpp  ConsoleSink.hpp  (the implementations)
+  TimeUtil.hpp                       (portable calendar arithmetic)
+src/               FileLineSource.cpp  ParserStage.cpp  ConsoleSink.cpp  Pipeline.cpp  Main.cpp
+tests/             unit tests + tiny test harness + test doubles (CollectingEmitter, ...)
+scripts/           coverage.sh
+data/              access-small.log        (200 valid lines, combined access-log format)
+                   access-with-errors.log  (7 lines, 4 of them malformed, for demos)
+ARCHITECTURE.md   design decisions;  CHANGELOG.md  what changed in each increment
 ARCHITECTURE.md   two-box diagram and design decisions
 ```
 
 ## Using the pipeline
 
 ```cpp
+auto parser = std::make_shared<logflow::ParserStage>();
 auto pipeline = logflow::from(std::make_shared<logflow::FileLineSource>(path))
-                    // .then(std::make_shared<SomeStage>())   // stages go here, in order
+                    .then(parser)                              // stages go here, in order
                     .to(std::make_shared<logflow::ConsoleSink>());
 pipeline.run();
+// parser->malformedCount() now holds the number of skipped lines
 ```
 
 ## Versions
@@ -71,3 +79,21 @@ pipeline.run();
 | Tag | Increment |
 |---|---|
 | `v1` | The skeleton pipeline |
+| `v2` | `LogRecord`, `ParserStage`, collecting-emitter tests |
+
+## Test coverage (v2)
+
+Measured with `make coverage` (Apple clang + llvm-cov gcov, `-O0`). The unit-test suite
+(40 tests) covers **94.1 %** of the lines in `src/*.cpp` (186 lines):
+
+| File | Line coverage |
+| ---- | ------------- |
+| `src/ParserStage.cpp` | 97.5 % |
+| `src/FileLineSource.cpp` | 92.9 % |
+| `src/ConsoleSink.cpp` | 81.5 % |
+| `src/Pipeline.cpp` | 91.7 % |
+
+`src/Main.cpp` is excluded: it only wires components together and is exercised
+by `make check`, not by the unit tests. Header-only code is not counted. Re-run
+`make coverage` on your machine; the numbers can differ slightly between
+compilers.
