@@ -1,6 +1,6 @@
 # LogFlow — Architecture
 
-*Sections 1-8 describe Increment 1 (the skeleton). Increment 2 is documented in section 9 at the end; where the two disagree (record type, `ConsoleSink`), section 9 wins.*
+*Sections 1-8 describe Increment 1 (the skeleton), section 9 Increment 2, section 10 Increment 3 (composition). Later sections win where they disagree with earlier ones: the record type and `ConsoleSink` (section 9); the builder method is now `via()` instead of `then()`, `Sink` has lifecycle hooks, and `Pipeline` was extended (section 10).*
 
 ## Increment 1: The Skeleton Pipeline
 
@@ -88,8 +88,9 @@ a 10 GB log would use the same memory as a 200-line one.
 
 ## 5. Lifecycle
 
-`Stage` has `open()` and `close()` hooks, unused this week. The pipeline
-already honours them, so later increments can rely on it:
+`Stage` has `open()` and `close()` hooks, unused this week (Increment 3 uses
+them for `FileSink`, and gives `Sink` the same pair; see section 10). The
+pipeline already honours them, so later increments can rely on it:
 
 1. `open()` on every stage, in order.
 2. Records flow.
@@ -102,7 +103,7 @@ sees. All of this is covered by tests.
 ## 6. C++-specific decisions
 
 - **Templates instead of generics.** `Stage<I, O>` is a class template, so
-  type errors are caught at compile time. `from(source).then(stage).to(sink)`
+  type errors are caught at compile time. `from(source).via(stage).to(sink)`
   is a typed builder: if a stage's input type does not match the previous
   step's output type, the code does not compile.
 - **`std::shared_ptr` ownership.** The pipeline shares ownership of its
@@ -226,3 +227,161 @@ and independent of the other components. It will be reused by every later stage.
 - The referer is parsed but not stored (it is still in `raw`).
 - IPv6 and hostnames are accepted as opaque text; the IP is not validated.
 - Tests: 40 (the 22 from Increment 1, with the console and end-to-end ones reworked for records, plus 18 new). See the README for coverage.
+
+---
+
+## 10. Increment 3: composition
+
+```
+ FileLineSource ─string─> ParserStage ─LogRecord─> PredicateFilterStage ─> ... ─> ProjectionStage ─> FileSink
+ (Source<string>)    (Stage<string,LogRecord>)      (Stage<LogRecord,LogRecord>, any number, any order)   (Sink<LogRecord>)
+```
+
+```cpp
+auto pipeline = logflow::from(std::make_shared<FileLineSource>(in))
+                    .via(std::make_shared<ParserStage>())
+                    .via(std::make_shared<PredicateFilterStage>(predicates::statusAtLeast(400)))
+                    .via(std::make_shared<ProjectionStage>(std::vector<std::string>{"timestamp", "clientIp", "status", "path"}))
+                    .to(std::make_shared<FileSink>(out));
+```
+
+### What changed in last week's code, and why
+
+Increment 2 could say "`Pipeline` unchanged". Increment 3 cannot, honestly:
+
+| Change | Why |
+|---|---|
+| `Sink` gained `open()` / `close()` (default: do nothing) | `FileSink` owns a file. Without hooks there was nowhere to open it before the data and flush it after. Existing sinks do not need to change: the defaults do nothing. |
+| `Pipeline::to()` adds the sink to the lifecycle; `stageCount()` still counts only stages | Order is: open stages in order, then the sink; data flows; close the sink first, then the stages last to first. Same "reverse order, even on failure" rule as before, now including the sink. |
+| `then()` renamed `via()` | The assignment's vocabulary. A filter *carries* records through, it does not come "after" anything. No alias kept: one name per thing. |
+| `ConsoleSink` prints a projected record as `name=value` pairs; the ISO-8601 formatter moved from `ConsoleSink.cpp` to `TimeUtil.hpp` | Otherwise `--fields` without `--output` would print blank columns. `Fields.cpp` needs the same formatter. Output for unprojected records is byte-identical to before (tests unchanged). |
+
+`Source`, `Stage` (code), `Emitter`, `LogRecord`, `ParserStage`, `FileLineSource` are unchanged.
+
+### One architectural element, two jobs
+
+`PredicateFilterStage` (drops records) and `ProjectionStage` (rewrites records)
+are both `Stage<LogRecord, LogRecord>`. Neither knows about the other, about
+the parser, or about the sink. This works only because of the week-1 decision
+that a stage *emits* instead of *returns*: the filter emits zero or one record,
+the projection always one, and the pipeline cannot tell them apart.
+Because they keep the record type, `PipelineBuilder<LogRecord>::via()` hands
+back a `PipelineBuilder<LogRecord>`: stages of this kind can be added in any
+order, any number of times, even inside a loop or an `if`, which is exactly what
+`Main` does with the command-line options.
+
+### Design decisions
+
+**Projection keeps the type `LogRecord`.** The alternative is a separate
+`ProjectedRecord`, which would make "filter after a projection that dropped the
+field" a compile error. The price: every filter, and every sink, would need a
+second version for the second type, and composing "in any order" (the point of
+this increment) would stop being true. So `ProjectionStage` resets the fields
+that were not selected to empty/zero, drops `raw` (it contains every field) and
+the extension attributes, and records which fields it kept in one attribute
+(`logflow.fields`, the extension point from section 9). `FileSink` and
+`ConsoleSink` read that attribute to know which fields are real. The cost of
+this choice is real and is shown in experiment C below: a later stage reads
+blank values *silently*. It is documented on the class and pinned by a test.
+(Week 4 could close the gap: when the pipeline is built from a configuration it
+can check that a field a filter needs is not projected away before it.)
+
+**Predicates are `std::function<bool(const LogRecord&)>`** (`Predicate<LogRecord>`),
+so a lambda works (`[](const LogRecord& r) { return r.status >= 400; }`), and
+`predicates::statusAtLeast / pathStartsWith / timestampBetween` cover the
+usual cases from the assignment. The time range is half-open
+`[from, to)` so adjacent ranges never overlap. `pathStartsWith` is a plain
+string prefix on the path as logged (query string included): `/api` also
+matches `/apiary`.
+
+**`FileSink` lifecycle** is the point of the class:
+the constructor only stores the path; `open()` creates/truncates the file and
+throws if it cannot; `consume()` before `open()` is a `std::logic_error`;
+`close()` closes the stream, which flushes it, and *throws* if that failed.
+The stream buffers, so a sink that is never closed can lose its last lines
+without any error. The test suite shows this: with `close()` deliberately
+disabled, six tests fail (the file is empty when it is read). The pipeline
+calls `close()` even if a stage throws, so the rows written before a failure
+are on disk (`the_output_file_is_closed_even_when_a_stage_fails_midway`).
+Output is CSV (RFC 4180 quoting, no header row); columns are the projected
+fields in the order requested.
+
+**Command line** (`CommandLine.cpp`, tested without a process):
+`logflow <logfile> [--output FILE] [--min-status N] [--path-prefix P] [--fields a,b,c]`.
+Each option present adds one stage; the order is fixed: parse, filters,
+projection, sink. Without `--output` the console sink is used. Mistakes
+(unknown option or field, bad status, repeated option) exit with code 2 and a
+usage message. `--output` equal to the input file is refused: the sink
+truncates its file when it opens, which would destroy the log being read.
+
+### Experiment: does the order of stages matter?
+
+`make experiment` runs `experiments/order_experiment.cpp`: the sample log
+repeated 2,000 times in memory (400,000 lines, no disk in the timings), every
+variant run 7 times after a warm-up, best time reported. "Same result" means
+the same number of rows and the same hash of the CSV text.
+Measured in the development container (Linux, g++ 13, `-O2`); absolute times
+will differ on a Mac, the shape should not. Re-run it and compare.
+
+| | Stage order | Rows out | Predicate calls | Best time | Same result? |
+|---|---|---|---|---|---|
+| **A** | status >= 400, then path `/api` | 20,000 | 452,000 | 402.6 ms | yes |
+| | path `/api`, then status >= 400 | 20,000 | 474,000 | 385.6 ms | |
+| **B** | filter status >= 400, then project | 52,000 | 400,000 | 441.2 ms | yes |
+| | project, then filter status >= 400 | 52,000 | 400,000 | 573.9 ms | |
+| **C** | filter, then project away `status` | 52,000 | 400,000 | 496.3 ms | **no** |
+| | project away `status`, then filter | **0** | 400,000 | 479.9 ms | |
+
+**A. Two filters: same result, almost the same cost.** Filters commute: a
+record survives only if it passes both, whichever is asked first. The only
+difference is how often the *second* predicate runs: 52,000 times when status
+comes first (13 % of records are errors) against 74,000 when the path comes
+first (18.5 % are `/api`), so 452,000 vs 474,000 calls in total. In time it is
+noise: over three runs the ratio moved between 0.96 and 1.11, because parsing
+a line (about 1 microsecond, end to end) dwarfs a predicate (a few nanoseconds).
+Lesson: put the more selective, cheaper filter first, but it only matters when
+a predicate is expensive.
+
+**B. Filter and projection: same result, different cost.** With the field kept,
+the two orders commute too. Projection builds a new `LogRecord` (several string
+copies) for every record it receives: 400,000 of them when it runs first,
+52,000 when it runs after the filter. Projecting first was 25-34 % slower in
+every run. Lesson: shrink the stream first (filter), then reshape what is left
+(project). It is the same reason a database applies `WHERE` before `SELECT`'s
+expressions.
+
+**C. Composability is not commutativity.** If the projection drops a field,
+a filter placed after it asks about a value that no longer exists. Nothing
+fails: the pipeline assembles, runs, and returns 0 rows. The rule is
+*a stage may only move earlier or later if the fields it reads survive the
+move*. Here the faster order (B) is also the only correct one.
+
+**D. Filtering before parsing is impossible, and the compiler says so.** A
+`PredicateFilterStage` consumes `LogRecord`s, and before the parser there are
+only strings. Placing it there does not build:
+
+```
+Pipeline.hpp: error: static assertion failed: Pipeline::via: the stage's input
+type does not match the output type of the previous step
+```
+
+(A stage that greps the raw line before the parser would compile, but it
+answers a different question: text matching, not `status >= 400`.) Order is
+partly constrained by data types (D), partly by what each stage reads (C),
+and the rest is a cost question (A, B).
+
+### Known limitations and what is left
+
+- Configuration (week 4) will replace the `if`s in `Main`: the builder is
+  ready for it, only the source of the stage list changes.
+- The command line has no time-range option; `predicates::timestampBetween`
+  exists and is tested, it is just not wired to an argument yet.
+- The sink opens before data flows, so a run that fails while reading (a
+  missing input file) can leave an empty output file behind.
+- `close()` order is "sink first": a future stage that wants to emit
+  buffered records when it closes (an aggregator) would find the sink closed.
+  That is a decision for the increment that introduces such a stage.
+- Malformed lines are still only counted (Increment 5).
+- Output is CSV only and has no header row.
+- Tests: 85 (the 40 from Increment 2, plus 45 new: 5 lifecycle, 9 filter,
+  9 projection, 10 file sink, 7 command line, 5 integration).

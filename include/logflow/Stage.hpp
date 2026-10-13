@@ -19,9 +19,9 @@ public:
 
     virtual void process(const I& input, Emitter<O>& out) = 0;
 
-    /// Lifecycle hooks (unused this week). Called by Pipeline::run(): open()
-    /// on every stage in order before data flows, close() in reverse order
-    /// afterwards, even if the run failed.
+    /// Lifecycle hooks. Called by Pipeline::run(): open() on every stage in
+    /// order before data flows, close() in reverse order afterwards, even if
+    /// the run failed. (Sinks have the same pair; see Sink.hpp.)
     virtual void open() {}
     virtual void close() {}
 };

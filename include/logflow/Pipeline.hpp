@@ -24,7 +24,7 @@ class PipelineBuilder;
 
 namespace detail {
 
-/// Type-erased handle to a stage's lifecycle, in pipeline order.
+/// Type-erased handle to a component's lifecycle (a stage or the sink).
 struct StageHooks {
     std::function<void()> open;
     std::function<void()> close;
@@ -57,29 +57,33 @@ private:
 }  // namespace detail
 
 /// A fully assembled source -> stage* -> sink chain. Obtain one with
-/// from(source).then(stage)...to(sink); then call run().
+/// from(source).via(stage)...to(sink); then call run().
 class Pipeline {
 public:
     /// Push every record from the source, through the stages in order, into the sink.
     ///
-    /// Lifecycle: open() on each stage in order, then data flows, then close()
-    /// on each stage in reverse order. close() runs even if a stage, the
-    /// source, or the sink throws; the original exception is rethrown.
+    /// Lifecycle: open() on each stage in order, then on the sink; data flows;
+    /// then close() in reverse order (sink first, then the stages last to
+    /// first). close() runs even if a stage, the source, or the sink throws;
+    /// the original exception is rethrown.
     void run() const;
 
-    std::size_t stageCount() const { return stages_.size(); }
+    /// Number of stages between source and sink (the sink is not counted).
+    std::size_t stageCount() const { return stageCount_; }
 
 private:
     template <typename T>
     friend class PipelineBuilder;
 
-    Pipeline(std::function<void()> body, std::vector<detail::StageHooks> stages);
+    Pipeline(std::function<void()> body, std::vector<detail::StageHooks> lifecycle,
+             std::size_t stageCount);
 
-    static void closeOpened(const std::vector<detail::StageHooks>& stages,
+    static void closeOpened(const std::vector<detail::StageHooks>& lifecycle,
                             std::size_t opened, bool rethrow);
 
     std::function<void()> body_;
-    std::vector<detail::StageHooks> stages_;
+    std::vector<detail::StageHooks> lifecycle_;  // stages in order, then the sink
+    std::size_t stageCount_;
 };
 
 /// Type-safe assembly of a pipeline. T is the type of record that flows out
@@ -94,11 +98,14 @@ public:
     }
 
     /// Append a stage. Its input type must equal T; the result carries its output type.
+    /// A stage that keeps the type (a filter, a projection) gives back the same
+    /// PipelineBuilder<T>, so such stages can be added in any order, any number
+    /// of times, even conditionally in a loop.
     template <typename S>
-    auto then(std::shared_ptr<S> stage) const -> PipelineBuilder<typename S::output_type> {
+    auto via(std::shared_ptr<S> stage) const -> PipelineBuilder<typename S::output_type> {
         using Next = typename S::output_type;
         static_assert(std::is_base_of<Stage<T, Next>, S>::value,
-                      "Pipeline::then: the stage's input type does not match the "
+                      "Pipeline::via: the stage's input type does not match the "
                       "output type of the previous step");
         if (!stage) throw std::invalid_argument("Pipeline: stage must not be null");
 
@@ -114,16 +121,19 @@ public:
             std::move(stages));
     }
 
-    /// Finish the chain with a sink.
+    /// Finish the chain with a sink. The sink's open()/close() join the
+    /// lifecycle after the last stage.
     Pipeline to(std::shared_ptr<Sink<T>> sink) const {
         if (!sink) throw std::invalid_argument("Pipeline: sink must not be null");
         Upstream upstream = upstream_;
+        auto lifecycle = stages_;
+        lifecycle.push_back({[sink] { sink->open(); }, [sink] { sink->close(); }});
         return Pipeline(
             [upstream, sink] {
                 detail::SinkEmitter<T> adapter(*sink);
                 upstream(adapter);
             },
-            stages_);
+            std::move(lifecycle), stages_.size());
     }
 
 private:
@@ -139,7 +149,7 @@ private:
     std::vector<detail::StageHooks> stages_;
 };
 
-/// Begin a pipeline:  from(source).then(stage).then(stage).to(sink).run();
+/// Begin a pipeline:  from(source).via(stage).via(stage).to(sink).run();
 template <typename S>
 auto from(std::shared_ptr<S> source) -> PipelineBuilder<typename S::output_type> {
     using O = typename S::output_type;

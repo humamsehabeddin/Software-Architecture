@@ -1,5 +1,41 @@
 # Change log
 
+## v3: Increment 3, composition: filtering, projection and the pipeline builder
+
+### Added
+- `include/logflow/PredicateFilterStage.hpp`, `src/PredicateFilterStage.cpp`: forwards a
+  record only if a `Predicate<LogRecord>` accepts it; counts seen/passed.
+- `include/logflow/Predicates.hpp`, `src/Predicates.cpp`: `Predicate<T>` alias and the
+  `statusAtLeast`, `pathStartsWith`, `timestampBetween` factories.
+- `include/logflow/ProjectionStage.hpp`, `src/ProjectionStage.cpp`: reduces a record to
+  selected fields (drops `raw` and attributes).
+- `include/logflow/FileSink.hpp`, `src/FileSink.cpp`: CSV output file with a real
+  `open()`/`close()` lifecycle.
+- `include/logflow/Fields.hpp`, `src/Fields.cpp`: field names, text values, projection
+  marker, CSV quoting.
+- `include/logflow/CommandLine.hpp`, `src/CommandLine.cpp`: `--output`, `--min-status`,
+  `--path-prefix`, `--fields`.
+- `experiments/order_experiment.cpp`, `make experiment`: the stage-order experiment.
+- Tests: `predicate_filter_stage_test.cpp`, `projection_stage_test.cpp`,
+  `file_sink_test.cpp`, `command_line_test.cpp`, `integration_test.cpp`, five lifecycle
+  tests in `pipeline_test.cpp` (45 new, 85 in total).
+
+### Changed
+- `include/logflow/Sink.hpp`: `open()` / `close()` hooks (default: do nothing).
+- `include/logflow/Pipeline.hpp`, `src/Pipeline.cpp`: the sink joins the lifecycle (opened
+  after the stages, closed before them); `PipelineBuilder::then()` renamed `via()`.
+- `src/ConsoleSink.cpp`: prints projected records as `name=value`; the ISO-8601
+  formatter moved to `TimeUtil.hpp`.
+- `src/Main.cpp`: builds the pipeline from the command-line options.
+- `Makefile`, `CMakeLists.txt`: new sources, tests and experiment; `make check` also
+  verifies a filtered, projected file against `awk`; CMake version 3.0.0.
+- `tests/test_support.hpp`: `LifecycleSink`, `makeRecord`, `TempPath`, `readFile`.
+- `README.md`, `ARCHITECTURE.md` (section 10), this file.
+
+### Unchanged
+`Source.hpp`, `Emitter.hpp`, `StageException.hpp`, `Stage.hpp` (code), `LogRecord.hpp`,
+`ParserStage`, `FileLineSource`, `tests/mini_test.hpp`, `tests/test_main.cpp`.
+
 ## v2: Increment 2, typed records and the first real stage
 
 ### Added

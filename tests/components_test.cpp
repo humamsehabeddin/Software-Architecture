@@ -104,7 +104,7 @@ TEST(sample_log_parses_completely_into_one_console_line_per_record) {
     auto parser = std::make_shared<logflow::ParserStage>();
     std::ostringstream printed;
     logflow::from(std::make_shared<logflow::FileLineSource>(LOGFLOW_SAMPLE_LOG))
-        .then(parser)
+        .via(parser)
         .to(std::make_shared<logflow::ConsoleSink>(printed))
         .run();
 
@@ -123,7 +123,7 @@ TEST(a_log_with_bad_lines_is_still_processed_and_the_bad_lines_are_counted) {
     auto parser = std::make_shared<logflow::ParserStage>();
     std::ostringstream printed;
     logflow::from(std::make_shared<logflow::FileLineSource>(f.path()))
-        .then(parser)
+        .via(parser)
         .to(std::make_shared<logflow::ConsoleSink>(printed))
         .run();
     CHECK_EQ(parser->parsedCount(), std::size_t(1));

@@ -3,7 +3,10 @@
 // on macOS and Linux. Howard Hinnant's public-domain "civil" algorithms,
 // valid for the whole proleptic Gregorian calendar.
 
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 namespace logflow {
 namespace timeutil {
@@ -45,6 +48,25 @@ inline bool isLeapYear(std::int64_t y) {
 inline unsigned daysInMonth(std::int64_t y, unsigned m) {
     static const unsigned table[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     return (m == 2 && isLeapYear(y)) ? 29 : table[m - 1];
+}
+
+/// "2026-09-21T09:00:00Z" (UTC, whole seconds).
+inline std::string formatIso8601Utc(std::chrono::system_clock::time_point t) {
+    const std::int64_t secs =
+        std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count();
+    std::int64_t days = secs / 86400;
+    std::int64_t rem = secs % 86400;
+    if (rem < 0) {  // before 1970: keep the time of day positive
+        rem += 86400;
+        --days;
+    }
+    const Civil c = civilFromDays(days);
+    char buf[40];
+    std::snprintf(buf, sizeof buf, "%04lld-%02u-%02uT%02lld:%02lld:%02lldZ",
+                  static_cast<long long>(c.year), c.month, c.day,
+                  static_cast<long long>(rem / 3600),
+                  static_cast<long long>(rem % 3600 / 60), static_cast<long long>(rem % 60));
+    return buf;
 }
 
 }  // namespace timeutil

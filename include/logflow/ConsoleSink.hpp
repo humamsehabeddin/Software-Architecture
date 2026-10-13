@@ -13,6 +13,8 @@ namespace logflow {
 ///
 /// Line format (timestamp is shown in UTC):
 ///   2026-09-21T09:00:00Z 203.0.113.240 GET /products/42 -> 404 8301B "user agent"
+/// A record that went through a ProjectionStage prints only its selected fields:
+///   timestamp=2026-09-21T09:00:00Z clientIp=203.0.113.240 status=404
 class ConsoleSink final : public Sink<LogRecord> {
 public:
     explicit ConsoleSink(std::ostream& out);

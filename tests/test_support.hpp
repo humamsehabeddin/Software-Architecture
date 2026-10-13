@@ -1,13 +1,17 @@
 #pragma once
 // Test doubles: small implementations of the interfaces, used only by tests.
 
+#include <chrono>
 #include <cstdio>
+#include <iterator>
+#include <stdexcept>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "logflow/FileLineSource.hpp"
+#include "logflow/LogRecord.hpp"
 #include "logflow/Pipeline.hpp"
 
 namespace support {
@@ -123,6 +127,59 @@ private:
     bool failOnOpen_;
     bool failOnProcess_;
 };
+
+/// A sink that logs its lifecycle ("open:sink", "consume:x", "close:sink") into
+/// the same event list as RecordingStage; can be told to fail on open/close.
+class LifecycleSink final : public logflow::Sink<std::string> {
+public:
+    explicit LifecycleSink(std::vector<std::string>& events, bool failOnOpen = false,
+                           bool failOnClose = false)
+        : events_(events), failOnOpen_(failOnOpen), failOnClose_(failOnClose) {}
+    void open() override {
+        if (failOnOpen_) throw std::runtime_error("open failed: sink");
+        events_.push_back("open:sink");
+    }
+    void consume(const std::string& item) override { events_.push_back("consume:" + item); }
+    void close() override {
+        events_.push_back("close:sink");
+        if (failOnClose_) throw std::runtime_error("close failed: sink");
+    }
+
+private:
+    std::vector<std::string>& events_;
+    bool failOnOpen_;
+    bool failOnClose_;
+};
+
+/// A LogRecord with only the fields tests usually care about; second counts
+/// from 2026-09-21T09:00:00Z.
+inline logflow::LogRecord makeRecord(int status, const std::string& path, int second = 0,
+                                     const std::string& ip = "10.0.0.1",
+                                     const std::string& agent = "agent") {
+    return logflow::LogRecord(
+        logflow::LogRecord::Timestamp(std::chrono::seconds(1789981200 + second)), ip, "GET",
+        path, status, 100, agent, {}, "raw " + path);
+}
+
+/// The path of a file the test will create; removed on destruction.
+class TempPath {
+public:
+    explicit TempPath(const std::string& tag) : path_("logflow_test_" + tag + ".tmp") {
+        std::remove(path_.c_str());
+    }
+    ~TempPath() { std::remove(path_.c_str()); }
+    TempPath(const TempPath&) = delete;
+    TempPath& operator=(const TempPath&) = delete;
+    const std::string& path() const { return path_; }
+
+private:
+    std::string path_;
+};
+
+inline std::string readFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
 
 /// Writes a file on construction, deletes it on destruction.
 class TempFile {
